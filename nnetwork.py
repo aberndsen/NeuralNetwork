@@ -9,7 +9,7 @@ import numpy as np
 import sys
 #import pyximport; pyximport.install()
 #from cy_sigmoid import cy_sigmoid
-from sigmoid2d import sigmoid2d
+from nnopti import sigmoid2d, matmult
 #number of iterations in training
 _niter = 0
 
@@ -339,7 +339,12 @@ class NeuralNetwork(object):
 # requires delta from next layer (hence reverse loop over layers)
                     aprime = np.hstack([1, sigmoidGradient(z)]) #add in bias
 
-                    delta = (aprime * np.dot(theta, deltan))
+                    if deltan.ndim == 1:
+                        tmp = matmult(theta, deltan).flatten()
+                    else:
+                        tmp = matmult(theta, deltan)
+                    delta = (aprime * tmp)
+                    # delta = (aprime * np.dot(theta, deltan))
 
 # add this sample's contribution to the gradient:
                 idx = li - 1
