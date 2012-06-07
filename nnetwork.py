@@ -351,7 +351,10 @@ class NeuralNetwork(object):
                 else:
                     theta = self.layers[li].theta
                     aprime = np.hstack([np.ones((N,1)), sigmoidGradient(z)]) #add in bias
-                    tmp = np.dot(deltan,theta.transpose())#nsamples x neurons(li)
+                    if deltan.size * theta.size > 1000000:
+                        tmp = matmult(deltan,theta.tranpose())
+                    else:
+                        tmp = np.dot(deltan,theta.transpose())#nsamples x neurons(li)
                     delta = tmp*aprime
                     
 #find contribution to grad
