@@ -9,10 +9,26 @@ import numpy as np
 import sys
 #import pyximport; pyximport.install()
 #from cy_sigmoid import cy_sigmoid
-from nnopti import sigmoid2d, matmult
+from nnopt import sigmoid2d, matmult
 #number of iterations in training
 _niter = 0
 
+def load_pickle(fname):
+    """
+    recover from a pickled NeuralNetwork classifier
+
+    """
+    d = cPickle.load(open(fname,'r'))
+    nlayers = d['nlayers']
+    gamma = d['gamma']
+    thetas = []
+    for li in range(nlayers):
+        thetas.append(d[li])
+
+    nin = thetas[0].shape[0] - 1 # remove bias
+    nout = thetas[-1].shape[1]   # no bias on output
+    classifier = create_NN(nin, nout, thetas=thetas, gamma=gamma)
+    return classifier
 
 def create_NN(ninputs, nout, ninternal= np.array([16]), thetas=np.array([]),
               delta=0, gamma=0.5):
@@ -323,9 +339,40 @@ class NeuralNetwork(object):
         grads = {}
         for li, lv in enumerate(self.layers):
             grads[li] = np.zeros_like(lv.theta)
+            
+# vectorize sample-loop
+        if 1:
+            for li in range(nl, 0, -1):
+                z, a = self.forward_propagate(X,li)
 
+                if li == nl:
+                    ay = labels2vectors(y, self.nclasses).transpose()
+                    delta = (a - ay)
+                else:
+                    theta = self.layers[li].theta
+                    aprime = np.hstack([np.ones((N,1)), sigmoidGradient(z)]) #add in bias
+                    tmp = np.dot(deltan,theta.transpose())#nsamples x neurons(li)
+                    delta = tmp*aprime
+                    
+#find contribution to grad
+                idx = li - 1
+                z, a = self.forward_propagate(X,idx)
+                if idx in grads:
+                    if li == nl:
+                        grads[idx] = np.dot(a.transpose(), delta)/N
+                    else:
+                        #strip off bias
+                        grads[idx] = np.dot(a.transpose(), delta[:,1:])/N
+#keep this delta for the next (earlier) layer
+                if li == nl:
+                    deltan = delta
+                else:
+                    deltan = delta[:,1:]
+
+# old, non-vectorized implementation                     
 # loop over samples
-        for si, sv in enumerate(X):
+        if 0:
+          for si, sv in enumerate(X):
 
 # loop over layers (latest to earliest, no grad on first layer)
             for li in range(nl, 0, -1):
@@ -339,12 +386,15 @@ class NeuralNetwork(object):
 # requires delta from next layer (hence reverse loop over layers)
                     aprime = np.hstack([1, sigmoidGradient(z)]) #add in bias
 
+# only use fortan.matmult if arrays are gigantic
                     if deltan.ndim == 1:
-                        tmp = matmult(theta, deltan).flatten()
+                        delta = (aprime * np.dot(theta, deltan))
                     else:
-                        tmp = matmult(theta, deltan)
-                    delta = (aprime * tmp)
-                    # delta = (aprime * np.dot(theta, deltan))
+                        if theta.size > 5000:
+                            tmp = matmult(theta, deltan)
+                            delta = (aprime * tmp)
+                        else:
+                            delta = (aprime * np.dot(theta, deltan))
 
 # add this sample's contribution to the gradient:
                 idx = li - 1
@@ -496,9 +546,10 @@ class NeuralNetwork(object):
 
         return numgrad
 
-    def pickle_me(self, filename=''):
+   def pickle_me(self, filename=''):
         """
-        dump the classifier to a pickled file.
+        dump the important parts of the classifier to a pickled file.
+        (the theta's and gamma=learning rate)
         We name the file based on number of layers,
         and shape of layers
         
@@ -506,19 +557,23 @@ class NeuralNetwork(object):
         filename : base filename, append layer info to this
 
         """
-        import cPickle
         for li, lv in enumerate(self.layers):
-            shp = lv.theta.shape
             if filename:
-                filename += '__lyr%s_shp%sx%s' % (li, shp[0], shp[1])
+                filename += '_l%sx%s' % lv.theta.shape
             else:
-                filename += 'lyr%s_shp%sx%s' % (li, shp[0], shp[1])
+                filename += 'l%sx%s' % lv.theta.shape
         filename += '.pkl'
+#create our pickle
         d = {}
-        d['classifier'] = self
-        print "pickling classifier to %s" % filename
-        cPickle.dump(d, open(filename,'w'))
+        d['nlayers'] = len(self.layers)
+        for li, lv in enumerate(self.layers):
+            d[li] = lv.theta
+        d['gamma'] = self.gamma
         
+        print "pickling classifier to %s" % filename
+        cPickle.dump(d, open(filename, 'w'))
+    
+
     def write_thetas(self, basename='layer_'):
         """
         Write the theta's to a file in form
