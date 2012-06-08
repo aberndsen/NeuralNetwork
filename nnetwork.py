@@ -673,7 +673,7 @@ class NeuralNetwork(BaseEstimator):
             self.fit(X, y, gamma=gv, maxiter=40, raninit=True)
             
             train_error[gi] = self.costFunctionU(X, y, gamma=gv)
-            xval_error[gi] = self.costFunctoinU(Xval, yval, gamma=gv)
+            xval_error[gi] = self.costFunctionU(Xval, yval, gamma=gv)
 
         if plot:
             plt.plot(gammas, train_error, label='Train')
