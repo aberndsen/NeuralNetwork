@@ -568,6 +568,120 @@ class NeuralNetwork(BaseEstimator):
             cls = h.argmax(axis=1)
         return cls
 
+    def learning_curve(self, X, y,
+                       Xval=None, yval=None,
+                       gamma=0., plot=False):
+        """
+        returns the training and cross validation set errors
+        for a learning curve
+        (good for exploring effect of number of training samples)
+        
+        Args:
+        X : training data
+        y : training value
+        Xval : test data
+        yval : test value
+        plot : False/[True] optionally plot the learning curve
+        
+        Note: if Xval == None, then we assume (X,y) is the entire set of data,
+              and we split them up using split_data(data,target)
+
+        returns two vectors of length(X):
+        error_train : training error for the N=length(X) 
+        error_val : error on x-val data, when trainined on "i" samples
+
+        error = cost_Function(lambda=0)
+
+        notes:
+        * a high error indicates lots of bias,
+          that you are probably underfitting the problem
+          (so add more neurons/layers)
+         
+        * for lots of trials, a high gap between training_error
+          and test_error (x-val error) indicates lots of variance
+          (you are over-fitting, so remove some neurons/layers,
+           or increase the regularization parameter)
+
+
+        """
+        if not Xval:
+            X, y, Xval, yval = split_data(X, y)
+
+        m = X.shape[0]
+        t_error = np.zeros(m)
+        v_error = np.zeros(m)
+        for i in range(2,m,5):
+            #fit with regularization
+#need at least two training items...
+            if i < 2: continue
+            self.fit(X[0:i+1], y[0:i+1], gamma=gamma, maxiter=250, raninit=True)
+            
+            # but compute error without!
+            t_error[i] = self.costFunctionU(X[0:i+1], y[0:i+1], gamma=0)
+            # use entire x-val set
+            v_error[i] = self.costFunctionU(Xval, yval, gamma=0)
+            
+        if plot:
+            plt.plot(t_error, label='training')
+            plt.plot(v_error, label='x-val')
+            plt.xlabel('training set size')
+            plt.ylabel('error [J(gamma=0)]')
+            plt.show()
+
+        return t_error, v_error
+
+    def validation_curve(self, X, y,
+                         Xval=None, yval=None,
+                         gammas=None, plot=False):
+        """
+        use a cross-validation set to evaluate various regularization 
+        parameters (gamma)
+        
+        specifically:
+        train the NN, then loop over a range of regularization parameters
+        and select best 'gamma' (=min(costFunction(cross-val data))
+
+        Args:
+        X : training data
+        y : training value
+        Xval : test data
+        yval : test value
+        gammas : a *list* of regularization values to sample
+                default None uses
+                [0., 0.001, 0.01, 0.1, 0.5, 1., .5, 5, 10, 50, 100]
+        plot : False/[True] optionally plot the validation cure
+        
+        Note: if Xval == None, then we assume (X,y) is the entire set of data,
+              and we split them up using split_data(data,target)
+
+        returns:
+        train_error(gamma), cross_val_error(gamma), gamma, best_gamma
+
+        """
+        if not Xval:
+            X, y, Xval, yval = split_data(X, y)
+        
+        if not gammas:
+            gammas = [0., 0.001, 0.01, 0.1, 0.5, 1., .5, 5, 10, 50, 100]
+        
+        train_error = np.zeros(len(gammas))
+        xval_error = np.zeros(len(gammas))
+        for gi, gv in enumerate(gammas):
+            self.fit(X, y, gamma=gv, maxiter=250, raninit=True)
+            
+            train_error(i) = self.costFunctionU(X, y, gamma=gv)
+            xval_error(i) = self.costFunctoinU(Xval, yval, gamma=gv)
+
+        if plot:
+            plt.plot(gammas, train_error, label='Train')
+            plt.plot(gammas, xval_error, label='Cross Validation')
+            plt.xlabel('gamma')
+            plt.ylabel('Error [costFunction]')
+            plt.legend()
+            plt.show()
+
+        return train_error, xval_error, gammas, gammas[xval_error.argmin()]
+
     def numericalGradients(self, X, y):
         """
         numerically estimate the gradients using finite differences
@@ -688,8 +802,8 @@ def checkGradients(nin=3, nout=3, ninternal=np.array([5]),
     y =  np.array(np.random.uniform(0, nout, Nsamples), dtype=int)
 
 # neural network, delta=0 and thetas=[] --> theta is randomly inited.
-    nn = create_NN(nin, nout, ninternal=ninternal, thetas=np.array([]),
-                   delta=0)
+    nn = create_NN(nin, nout, ninternal=ninternal, thetas=np.array([]), delta=0)
+
     numgrad = nn.numericalGradients(X, y)
     grad = nn.gradientU(X, y, gamma)
     return numgrad, grad
@@ -805,5 +919,38 @@ def sigmoidGradient(z):
     """
     return sigmoid(z) * (1-sigmoid(z))
         
+def split_data(data,target):
+    """
+    Given some complete set of data and their targets,
+    split the indices into 60% training, 40% x-val
+    
+    returns:
+    training_data, training_target, test_data, test_target
+    
+
+    """
+    from random import shuffle
+    
+    L = len(target)
+    index = range(L)
+    cut = int(0.6*L)
+    while 1:
+        shuffle(index)
+        training_idx = index[:cut]
+        training_target = target[training_idx]
+        training_data = data[training_idx]
+
+        test_idx = index[cut:]
+        test_target = target[test_idx]
+        test_data = data[test_idx]
+        
+# make sure training has samples from all classes
+        if len(np.unique(training_target)) == len(np.unique(target)):
+            break
+
+    return training_data, training_target, test_data, test_target
+
+
+
 if __name__ == '__main__':
     main()
