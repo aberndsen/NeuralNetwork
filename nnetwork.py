@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """
-a neural network implementation.
+Aaron Berndsen (2012)
+
+a neural network implementation in python, with f2py/fortran 
+optimizations for large data sets
 
 """
 import numpy as np
@@ -667,10 +670,10 @@ class NeuralNetwork(BaseEstimator):
         train_error = np.zeros(len(gammas))
         xval_error = np.zeros(len(gammas))
         for gi, gv in enumerate(gammas):
-            self.fit(X, y, gamma=gv, maxiter=250, raninit=True)
+            self.fit(X, y, gamma=gv, maxiter=40, raninit=True)
             
-            train_error(i) = self.costFunctionU(X, y, gamma=gv)
-            xval_error(i) = self.costFunctoinU(Xval, yval, gamma=gv)
+            train_error[gi] = self.costFunctionU(X, y, gamma=gv)
+            xval_error[gi] = self.costFunctoinU(Xval, yval, gamma=gv)
 
         if plot:
             plt.plot(gammas, train_error, label='Train')
