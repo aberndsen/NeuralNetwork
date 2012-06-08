@@ -10,6 +10,7 @@ import numpy as np
 from scipy import io
 import pylab as plt
 import sys
+from scipy.optimize import fmin_cg
 #import pyximport; pyximport.install()
 #from cy_sigmoid import cy_sigmoid
 from sklearn.base import BaseEstimator
@@ -56,7 +57,7 @@ def load_pickle(fname):
     return classifier
 
 def create_NN(ninputs, nout, ninternal= np.array([16]), thetas=np.array([]),
-              delta=0, gamma=0.5):
+              delta=0, gamma=0.):
     """
     configure our neural network.
     The number of hidden layers is set by len(ninternal)
@@ -75,7 +76,7 @@ def create_NN(ninputs, nout, ninternal= np.array([16]), thetas=np.array([]),
       if thetas = [], randomly initialize the theta's uniformly over range
                       [-delta,delta], but then you should train your data
     gamma : learning rate (regularization parameter)
-            defaults to .5
+            defaults to 0.
                   
     """
     if isinstance(ninputs, type(np.array([]))):
@@ -163,7 +164,7 @@ class NeuralNetwork(BaseEstimator):
     gamma = learning rate (regularization parameter)
 
     """
-    def __init__(self, layers, gamma=.5):
+    def __init__(self, layers, gamma=0.):
         self.layers = layers
         self.nclasses = layers[-1].theta.shape[-1]
         self.gamma = gamma
@@ -208,8 +209,6 @@ class NeuralNetwork(BaseEstimator):
         for you
 
         """
-        if not gamma:
-            gamma = self.gamma
         thetas = self.flatten_thetas()
         return self.costFunction(thetas, X, y, gamma)
 
@@ -223,14 +222,17 @@ class NeuralNetwork(BaseEstimator):
         X : num_trials x ninputs, ninputs not including bias term
         return cost
         y : classification label for the num_trials
+        gamma : regularization parameter, 
+               default = None = self.gamma
 
         """
         global _niter
         if isinstance(X, type([])):
             X = np.array(X)
         
-        if not gamma:
+        if gamma == None:
             gamma = self.gamma
+
 # testing: check the theta's are changing while we train: yes!
 #        print "CF",thetas[0:2], thetas[-5:-2]
 
@@ -310,8 +312,6 @@ class NeuralNetwork(BaseEstimator):
         needed for scipy.fmin functions
 
         """
-        if not gamma:
-            gamma = self.gamma
         thetas = self.flatten_thetas()
         return self.gradient(thetas, X, y, gamma)
         
@@ -323,6 +323,7 @@ class NeuralNetwork(BaseEstimator):
         X = [nsamples, ninputs]
         y = [nsamples] #the training classifications
         gamma : regularization parameter
+               default = None = self.gamma
 
         returns the gradient for the parameters of the neural network
         (the theta's) unrolled into one large vector, ordered from
@@ -332,7 +333,7 @@ class NeuralNetwork(BaseEstimator):
         if isinstance(X, type([])):
             X = np.array(X)
 
-        if not gamma:
+        if gamma == None:
             gamma = self.gamma
 
         N = X.shape[0]
@@ -513,7 +514,8 @@ class NeuralNetwork(BaseEstimator):
         Args:
         X : the training samples [nsamples x nproperties]
         y : the sample labels [nsamples], each entry in range 0<=y<nclass
-        
+        gamma : regularization parameter
+               default = None = self.gamma
         *for scipy.optimize.fmin_cg:
         maxiter
         epsilon
@@ -524,7 +526,9 @@ class NeuralNetwork(BaseEstimator):
         """
         global _niter
         _niter = 0
-        from scipy.optimize import fmin_cg
+
+        if gamma == None:
+            gamma = self.gamma
 
         if raninit:
             for lv in self.layers:
@@ -572,8 +576,11 @@ class NeuralNetwork(BaseEstimator):
         return cls
 
     def learning_curve(self, X, y,
-                       Xval=None, yval=None,
-                       gamma=0., plot=False):
+                       Xval=None, 
+                       yval=None,
+                       gamma=None,
+                       pct=0.6,
+                       plot=False):
         """
         returns the training and cross validation set errors
         for a learning curve
@@ -584,6 +591,11 @@ class NeuralNetwork(BaseEstimator):
         y : training value
         Xval : test data
         yval : test value
+        gamma : default None uses the objects value,
+               otherwise gamma=0.
+        pct (0<pct<1) : split the data as "pct" training, 1-pct testing
+                       only if Xval = None
+                       default pct = 0.6
         plot : False/[True] optionally plot the learning curve
         
         Note: if Xval == None, then we assume (X,y) is the entire set of data,
@@ -605,37 +617,45 @@ class NeuralNetwork(BaseEstimator):
           (you are over-fitting, so remove some neurons/layers,
            or increase the regularization parameter)
 
-
         """
         if not Xval:
-            X, y, Xval, yval = split_data(X, y)
+            X, y, Xval, yval = split_data(X, y, pct=pct)
+
+        if gamma == None:
+            gamma = self.gamma
 
         m = X.shape[0]
-        t_error = np.zeros(m)
-        v_error = np.zeros(m)
-        for i in range(2,m,5):
+        ntrials = range(2,m,5)
+        mm = len(ntrials)
+        t_error = np.zeros(mm)
+        v_error = np.zeros(mm)
+        for i, v in enumerate(ntrials):
             #fit with regularization
 #need at least two training items...
             if i < 2: continue
-            self.fit(X[0:i+1], y[0:i+1], gamma=gamma, maxiter=250, raninit=True)
+            self.fit(X[0:v+1], y[0:v+1], gamma=gamma, maxiter=100, raninit=True)
             
             # but compute error without!
-            t_error[i] = self.costFunctionU(X[0:i+1], y[0:i+1], gamma=0)
+            t_error[i] = self.costFunctionU(X[0:v+1], y[0:v+1], gamma=0.)
             # use entire x-val set
-            v_error[i] = self.costFunctionU(Xval, yval, gamma=0)
+            v_error[i] = self.costFunctionU(Xval, yval, gamma=0.)
             
         if plot:
-            plt.plot(t_error, label='training')
-            plt.plot(v_error, label='x-val')
+            plt.plot(ntrials, t_error, 'r+', label='training')
+            plt.plot(ntrials, v_error, 'bx', label='x-val')
             plt.xlabel('training set size')
             plt.ylabel('error [J(gamma=0)]')
+            plt.legend()
             plt.show()
 
         return t_error, v_error
 
     def validation_curve(self, X, y,
-                         Xval=None, yval=None,
-                         gammas=None, plot=False):
+                         Xval=None, 
+                         yval=None,
+                         gammas=None,
+                         pct=0.6,
+                         plot=False):
         """
         use a cross-validation set to evaluate various regularization 
         parameters (gamma)
@@ -649,9 +669,11 @@ class NeuralNetwork(BaseEstimator):
         y : training value
         Xval : test data
         yval : test value
+        pct (0<pct<1) : if Xval=None, split into 'pct' training
+                       "1-pct" testing
         gammas : a *list* of regularization values to sample
                 default None uses
-                [0., 0.001, 0.01, 0.1, 0.5, 1., .5, 5, 10, 50, 100]
+                [0., 0.0001, 0.0005, 0.001, 0.05, 0.1, .5, 1, 1.5, 15]
         plot : False/[True] optionally plot the validation cure
         
         Note: if Xval == None, then we assume (X,y) is the entire set of data,
@@ -662,10 +684,10 @@ class NeuralNetwork(BaseEstimator):
 
         """
         if not Xval:
-            X, y, Xval, yval = split_data(X, y)
+            X, y, Xval, yval = split_data(X, y, pct)
         
         if not gammas:
-            gammas = [0., 0.001, 0.01, 0.1, 0.5, 1., .5, 5, 10, 50, 100]
+            gammas = [0., 0.0001, 0.0005, 0.001, 0.05, 0.1, .5, 1., 1.5, 15.]
         
         train_error = np.zeros(len(gammas))
         xval_error = np.zeros(len(gammas))
@@ -725,13 +747,13 @@ class NeuralNetwork(BaseEstimator):
 # perturb each neuron and calc. grad at that neuron
                 for pi in range(theta_orig.size): #strip bias
                     perturb = np.zeros(theta_orig.size)
-                    perturb[pi] = gamma
+                    perturb[pi] = delta
                     perturb = perturb.reshape(theta_orig.shape)
                     lv.theta = theta_orig + perturb
                     loss1 = self.costFunctionU(X, y)
                     lv.theta = theta_orig - perturb
                     loss2 = self.costFunctionU(X, y)
-                    numgrad[idx] = (loss2 - loss1) / (2*gamma)
+                    numgrad[idx] = (loss2 - loss1) / (2*delta)
                     idx += 1
                 lv.theta = theta_orig
 
@@ -922,21 +944,25 @@ def sigmoidGradient(z):
     """
     return sigmoid(z) * (1-sigmoid(z))
         
-def split_data(data,target):
+def split_data(data, target, pct=0.6):
     """
     Given some complete set of data and their targets,
-    split the indices into 60% training, 40% x-val
+    split the indices into 'pct' training, '1-pct' cross-vals
     
+    Args:
+    data = input data
+    target = data classifications
+    pct = 0 < pct < 1, default 0.6
+
     returns:
     training_data, training_target, test_data, test_target
-    
 
     """
     from random import shuffle
     
     L = len(target)
     index = range(L)
-    cut = int(0.6*L)
+    cut = int(pct*L)
     while 1:
         shuffle(index)
         training_idx = index[:cut]
