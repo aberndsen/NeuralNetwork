@@ -3,15 +3,37 @@
 a neural network implementation.
 
 """
+import numpy as np
 from scipy import io
 import pylab as plt
-import numpy as np
 import sys
 #import pyximport; pyximport.install()
 #from cy_sigmoid import cy_sigmoid
+from sklearn.base import BaseEstimator
+#Aaron's fortran-optimized openmp code
 from nnopt import sigmoid2d, matmult
+import cPickle
+
 #number of iterations in training
 _niter = 0
+
+def main():
+    """ not really used """
+################
+# load the data 
+    data = handwritingpix(samples='ex4data1.mat',
+                          thetas='ex4weights.mat'                              
+                          )
+################
+# show some samples of the data
+    data.plot_samples(15)
+###############
+# create the neural network, one needs to set the number of inputs attributes
+# (minus bias)
+# and the number of outputs (classifications)
+    nin = data.data.shape[1]
+    nout = len(np.unique(data.y))
+    nn = create_NN(nin, nout, thetas=data.thetas, gamma=0.)
 
 def load_pickle(fname):
     """
@@ -42,8 +64,7 @@ def create_NN(ninputs, nout, ninternal= np.array([16]), thetas=np.array([]),
     nout: number of classifications
             **can be a numpy.array([nsamples]),
              then number of classifications = len(np.unique(nout))
-    ninternal: [number of attributes for the each internal layer
-               (without bias)]
+    ninternal: [number of attributes for the each internal layer (without bias)]
 
     optionally initialize the Theta's in the l'th layer to your predefined array
       * needs len(thetas) == len(ninternal) + 1 
@@ -84,7 +105,7 @@ def create_NN(ninputs, nout, ninternal= np.array([16]), thetas=np.array([]),
             lout = ninternal[idx] 
 
         print "Creating layer %s, (nin,nout) = (%s,%s) (with input bias)"\
-            % (idx,lin, lout)
+            % (idx, lin, lout)
         layers.append(layer(lin, lout, theta))
 
     return NeuralNetwork(layers, gamma=gamma)
@@ -130,36 +151,12 @@ class layer(object):
         self.theta = np.random.uniform(-delta, delta, N*m).reshape(N, m)
 
 
-def main():
-    """
-    main routine...
-    """
-################
-# load the data 
-    data = handwritingpix(samples='ex4data1.mat',
-                          thetas='ex4weights.mat'                              
-                          )
-################
-# show some samples of the data
-    data.plot_samples(15)
-
-
-###############
-# create the neural network, one needs to set the number of inputs attributes
-# (minus bias)
-# and the number of outputs (classifications)
-    nin = data.data.shape[1]
-    nout = len(np.unique(data.y))
-
-    nn = create_NN(nin, nout, thetas=data.thetas, gamma=0.)
-
-
-class NeuralNetwork(object):
+class NeuralNetwork(BaseEstimator):
     """
     a collection of layers forming the neural network
 
     Notes:
-    assumes labels are from [0,nclasses)
+    assumes labels are from [0, nclasses)
     gamma = learning rate (regularization parameter)
 
     """
@@ -232,7 +229,7 @@ class NeuralNetwork(object):
         if not gamma:
             gamma = self.gamma
 # testing: check the theta's are changing while we train: yes!
-#        print "CF",thetas[0:2],thetas[-5:-2]
+#        print "CF",thetas[0:2], thetas[-5:-2]
 
 # update the layer's theta's
         self.unflatten_thetas(thetas)
@@ -253,6 +250,8 @@ class NeuralNetwork(object):
             reg +=  (l.theta[1:, :]**2).sum()
         J = J + gamma*reg/(2*N)
 
+        if _niter == 0:
+            print ("\n")
         sys.stdout.write("\r training Iteration %s, Cost %10.6f " % (_niter, J))
         sys.stdout.flush()
         _niter += 1
@@ -273,7 +272,7 @@ class NeuralNetwork(object):
         if isinstance(z, type([])):
             z = np.array(z)
         # number of trials
-        if len(z.shape) == 2:
+        if z.ndim == 2:
             N = z.shape[0] 
             # add bias
             a = np.hstack([np.ones((N, 1)), z])
@@ -339,7 +338,7 @@ class NeuralNetwork(object):
         grads = {}
         for li, lv in enumerate(self.layers):
             grads[li] = np.zeros_like(lv.theta)
-            
+
 # vectorize sample-loop
         if 1:
             for li in range(nl, 0, -1):
@@ -351,10 +350,11 @@ class NeuralNetwork(object):
                 else:
                     theta = self.layers[li].theta
                     aprime = np.hstack([np.ones((N,1)), sigmoidGradient(z)]) #add in bias
-                    if deltan.size * theta.size > 1000000:
-                        tmp = matmult(deltan,theta.tranpose())
+#use fortran matmult if arrays are large
+                    if deltan.size * theta.size > 200000:
+                       tmp = matmult(deltan,theta.transpose())
                     else:
-                        tmp = np.dot(deltan,theta.transpose())#nsamples x neurons(li)
+                       tmp = np.dot(deltan,theta.transpose())#nsamples x neurons(li)
                     delta = tmp*aprime
                     
 #find contribution to grad
@@ -366,6 +366,7 @@ class NeuralNetwork(object):
                     else:
                         #strip off bias
                         grads[idx] = np.dot(a.transpose(), delta[:,1:])/N
+
 #keep this delta for the next (earlier) layer
                 if li == nl:
                     deltan = delta
@@ -398,6 +399,7 @@ class NeuralNetwork(object):
                             delta = (aprime * tmp)
                         else:
                             delta = (aprime * np.dot(theta, deltan))
+#                    
 
 # add this sample's contribution to the gradient:
                 idx = li - 1
@@ -428,8 +430,76 @@ class NeuralNetwork(object):
             z = np.hstack([z, v.flatten()])
         return z
 
-    def fit(self, X, y, gamma=None, maxiter=42, epsilon=1.e-7,
-            gtol=6.e-4, raninit=True):
+    def score(self, X, y):
+        """Returns the mean accuracy on the given test data and labels.
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training set.
+
+        y : array-like, shape = [n_samples]
+            Labels for X.
+
+        Returns
+        -------
+        z : float
+
+        """
+        return np.mean(self.predict(X) == y)
+
+
+
+    def score_weiwei(self, X, y, verbose=True):
+        """
+        Returns the mean accuracy on the given test data and labels
+    
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+        Training set.
+        
+        y : array-like, shape = [n_samples]
+        Labels for X.
+        
+        Returns
+        -------
+        z : float
+
+        """
+        pred_cls = {}
+        true_cls = {}
+        for cls in range(self.nclasses):
+            pred_cls[cls] = set([])
+            true_cls[cls] = set([])
+            
+        for i, s in enumerate(X):
+            predict = self.predict(s)[0]
+            true_cls[y[i]].add(i)
+            pred_cls[y[i]].add(i)
+
+        tot_acc = 0.
+        for k in range(self.nclasses):
+            hit = pred_cls[k] & true_cls[k]
+            miss = pred_cls[k] - true_cls[k]
+            falsepos = true_cls[k] - pred_cls[k] 
+            precision = np.divide(float(len(hit)), len(pred_cls[k]))
+            recall = np.divide(float(len(hit)), len(true_cls[k]))
+            accuracy = (np.divide(float(len(hit)), len(true_cls[k])) * 100)
+            tot_acc += accuracy
+            if verbose:
+                print "\nClass %s:" % k
+                print 'accuracy: ', '%.0f%%' % (np.divide(float(len(hit)),len(true_cls[k])) * 100)
+                print 'miss: ', '%.0f%%' % (np.divide(float(len(miss)),len(true_cls[k])) * 100)
+                print 'false positives: ', '%.0f%%' % (np.divide(float(len(falsepos)),len(pred_cls[k]))* 100)
+                print 'precision: ', '%.0f%%' % (precision* 100)
+                print 'recall: ', '%.0f%%' % (recall* 100)
+
+        z = tot_acc / self.nclasses
+        return z
+
+    def fit(self, X, y, gamma=None, maxiter=200, epsilon=1.e-7,
+            gtol=1.e-5, raninit=True):
         """
         Train the data.
         minimize the cost function (wrt the Theta's)
@@ -465,6 +535,7 @@ class NeuralNetwork(object):
                        maxiter=maxiter,
                        epsilon=epsilon,
                        gtol=gtol,
+                       disp=0,
 #                       callback=self.unflatten_thetas
                        )
         return xopt
@@ -549,7 +620,7 @@ class NeuralNetwork(object):
 
         return numgrad
 
-   def pickle_me(self, filename=''):
+    def pickle_me(self, filename=''):
         """
         dump the important parts of the classifier to a pickled file.
         (the theta's and gamma=learning rate)
@@ -572,11 +643,10 @@ class NeuralNetwork(object):
         for li, lv in enumerate(self.layers):
             d[li] = lv.theta
         d['gamma'] = self.gamma
-        
+
         print "pickling classifier to %s" % filename
         cPickle.dump(d, open(filename, 'w'))
-    
-
+        
     def write_thetas(self, basename='layer_'):
         """
         Write the theta's to a file in form
@@ -647,7 +717,7 @@ class handwritingpix(object):
         thetas = io.loadmat(thetas)
         self.theta1 = thetas['Theta1'].transpose()
         self.theta2 = thetas['Theta2'].transpose()
-        shp = self.data.shape
+
 #assume square image
         self.N = self.data.shape[1]
         self.Nsamples = self.data.shape[0]
