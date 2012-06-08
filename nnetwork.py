@@ -601,9 +601,10 @@ class NeuralNetwork(BaseEstimator):
         Note: if Xval == None, then we assume (X,y) is the entire set of data,
               and we split them up using split_data(data,target)
 
-        returns two vectors of length(X):
-        error_train : training error for the N=length(X) 
+        returns three vectors of length(ntrials):
+        error_train : training error for the N=length(pct*X) 
         error_val : error on x-val data, when trainined on "i" samples
+        ntrials
 
         error = cost_Function(lambda=0)
 
@@ -625,17 +626,18 @@ class NeuralNetwork(BaseEstimator):
             gamma = self.gamma
 
         m = X.shape[0]
-        ntrials = range(2,m,5)
+#need at least two training items...
+        stepsize = max(m/25,1)
+        ntrials = range(2,m,stepsize)
         mm = len(ntrials)
         t_error = np.zeros(mm)
         v_error = np.zeros(mm)
         for i, v in enumerate(ntrials):
             #fit with regularization
-#need at least two training items...
             if i < 2: continue
-            self.fit(X[0:v+1], y[0:v+1], gamma=gamma, maxiter=100, raninit=True)
+            self.fit(X[0:v+1], y[0:v+1], gamma=gamma, maxiter=50, raninit=True)
             
-            # but compute error without!
+            # but compute error without regularization
             t_error[i] = self.costFunctionU(X[0:v+1], y[0:v+1], gamma=0.)
             # use entire x-val set
             v_error[i] = self.costFunctionU(Xval, yval, gamma=0.)
@@ -648,7 +650,7 @@ class NeuralNetwork(BaseEstimator):
             plt.legend()
             plt.show()
 
-        return t_error, v_error
+        return t_error, v_error, ntrials
 
     def validation_curve(self, X, y,
                          Xval=None, 
