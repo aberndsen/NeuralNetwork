@@ -10,6 +10,7 @@ import numpy as np
 from scipy import io
 import pylab as plt
 import sys
+from scipy import mgrid
 from scipy.optimize import fmin_cg
 #import pyximport; pyximport.install()
 #from cy_sigmoid import cy_sigmoid
@@ -107,9 +108,10 @@ def create_NN(ninputs, nout, ninternal= np.array([16]), thetas=np.array([]),
             lout = nout
         else:
             lout = ninternal[idx] 
-
-        print "Creating layer %s, (nin,nout) = (%s,%s) (with input bias)"\
-            % (idx, lin, lout)
+        
+        if idx == 0: print("")
+        print "Creating layer %s, (nin,nout) = (%s,%s) (ignoring bias)"\
+            % (idx, lin-1, lout)
         layers.append(layer(lin, lout, theta))
 
     return NeuralNetwork(layers, gamma=gamma)
@@ -132,8 +134,8 @@ class layer(object):
 
     """
     def __init__(self, n, m, theta=np.array([]), delta=0):
-        # add one row for bias
-        self.input = n
+        #n includes bias
+        self.inp = n
         self.output = m
         if len(theta):
             self.theta = theta
@@ -148,7 +150,7 @@ class layer(object):
         """
         randomize the theta's for each 'fit' call in the neural network
         """
-        N = self.input
+        N = self.inp
         m = self.output
         if not delta:
             delta = np.sqrt(6)/np.sqrt( N + m)
@@ -161,14 +163,16 @@ class NeuralNetwork(BaseEstimator):
 
     Notes:
     assumes labels are from [0, nclasses)
-    gamma = learning rate (regularization parameter)
+    gamma = learning rate (regularization parameter), default = 0.
 
     """
     def __init__(self, layers, gamma=0.):
         self.layers = layers
+        self.nlayers = len(layers)
         self.nclasses = layers[-1].theta.shape[-1]
         self.gamma = gamma
         self.nthetas = len(self.flatten_thetas())
+        self.nfit = 0 # keep track of number of times the classifier has been 'fit'
 
     def unflatten_thetas(self, thetas):
         """
@@ -240,12 +244,16 @@ class NeuralNetwork(BaseEstimator):
         self.unflatten_thetas(thetas)
         
         # number of trials
-        N = X.shape[0] 
+        if X.ndim == 2:
+            N = X.shape[0] 
+        else:
+            N = 1
 
         # propagate the input through the entire network
         z, h = self.forward_propagate(X)
         yy = labels2vectors(y, self.nclasses)
-
+ 
+        J = 0.
         J = (-np.log(h) * yy.transpose() - np.log(1-h)*(1-yy.transpose())).sum()
         J = J/N
 
@@ -255,10 +263,9 @@ class NeuralNetwork(BaseEstimator):
             reg +=  (l.theta[1:, :]**2).sum()
         J = J + gamma*reg/(2*N)
 
-        if _niter == 0:
-            print ("\n")
-        sys.stdout.write("\r training Iteration %s, Cost %10.6f " % (_niter, J))
-        sys.stdout.flush()
+        if _niter % 25 == 0:
+            sys.stdout.write("\r(fit %s) training Iteration %s, Cost %12.7f " % (self.nfit,_niter, J))
+            sys.stdout.flush()
         _niter += 1
         return J
 
@@ -355,7 +362,7 @@ class NeuralNetwork(BaseEstimator):
                     theta = self.layers[li].theta
                     aprime = np.hstack([np.ones((N,1)), sigmoidGradient(z)]) #add in bias
 #use fortran matmult if arrays are large
-                    if deltan.size * theta.size > 200000:
+                    if deltan.size * theta.size > 100000:
                        tmp = matmult(deltan,theta.transpose())
                     else:
                        tmp = np.dot(deltan,theta.transpose())#nsamples x neurons(li)
@@ -398,7 +405,7 @@ class NeuralNetwork(BaseEstimator):
                     if deltan.ndim == 1:
                         delta = (aprime * np.dot(theta, deltan))
                     else:
-                        if theta.size > 5000:
+                        if theta.size > 100000:
                             tmp = matmult(theta, deltan)
                             delta = (aprime * tmp)
                         else:
@@ -503,7 +510,7 @@ class NeuralNetwork(BaseEstimator):
         return z
 
     def fit(self, X, y, gamma=None, maxiter=200, epsilon=1.e-7,
-            gtol=1.e-5, raninit=True):
+            gtol=1.e-5, raninit=True, info=False):
         """
         Train the data.
         minimize the cost function (wrt the Theta's)
@@ -516,6 +523,7 @@ class NeuralNetwork(BaseEstimator):
         y : the sample labels [nsamples], each entry in range 0<=y<nclass
         gamma : regularization parameter
                default = None = self.gamma
+        info : T/F, return the information from fmin_cg (Default False)
         *for scipy.optimize.fmin_cg:
         maxiter
         epsilon
@@ -529,6 +537,10 @@ class NeuralNetwork(BaseEstimator):
 
         if gamma == None:
             gamma = self.gamma
+
+# check the input/output feature sizes haven't changed.
+# if so, update the layer mappings accordingly:
+        self.check_networksize(X, y)
 
         if raninit:
             for lv in self.layers:
@@ -545,8 +557,36 @@ class NeuralNetwork(BaseEstimator):
                        disp=0,
 #                       callback=self.unflatten_thetas
                        )
-        return xopt
+        self.nfit += 1
+        print("\n")
+        if info:
+            return xopt
         
+    def check_networksize(self,X,y):
+        """
+        scikit learn initializes the free parameters when 'fit' is run. I initially coded things up 
+        to initialize these on object initialization.
+
+        This routine fixes the problem, and redesigns the input and output thetas depending on X and y.
+        The internal neural structure is preserved.
+        
+        """
+
+        newinput = X.shape #[X] = [nsamples, nfeatures] input won't have bias
+        oldinput = self.layers[0].theta.shape #input already has bias
+
+        print "AAR",newinput,oldinput
+#check if inputs are same
+        if newinput[1] + 1 != oldinput[0]:
+            print "Note, updating input features from %s to %s" % (oldinput[0], newinput[1]+1)
+            self.layers[0] = layer(newinput[1]+1, oldinput[1]) #add bias and randomly init.
+
+#check if outputs are same
+        newoutput = len(np.unique(y))
+        oldoutput = self.layers[-1].theta.shape
+        if oldoutput[1] != newoutput:
+            print "Note, updating output features from %s to %s" % (oldoutput[1], newoutput)
+            self.layers[-1] = layer(oldoutput[0], newoutput)
 
     def predict(self, X):
         """
@@ -611,7 +651,7 @@ class NeuralNetwork(BaseEstimator):
         notes:
         * a high error indicates lots of bias,
           that you are probably underfitting the problem
-          (so add more neurons/layers)
+          (so add more neurons/layers, or lower regularization)
          
         * for lots of trials, a high gap between training_error
           and test_error (x-val error) indicates lots of variance
@@ -626,15 +666,14 @@ class NeuralNetwork(BaseEstimator):
             gamma = self.gamma
 
         m = X.shape[0]
-#need at least two training items...
+#need at least one training item...
         stepsize = max(m/25,1)
-        ntrials = range(2,m,stepsize)
+        ntrials = range(1,m,stepsize)
         mm = len(ntrials)
         t_error = np.zeros(mm)
         v_error = np.zeros(mm)
         for i, v in enumerate(ntrials):
             #fit with regularization
-            if i < 2: continue
             self.fit(X[0:v+1], y[0:v+1], gamma=gamma, maxiter=50, raninit=True)
             
             # but compute error without regularization
@@ -680,6 +719,8 @@ class NeuralNetwork(BaseEstimator):
         
         Note: if Xval == None, then we assume (X,y) is the entire set of data,
               and we split them up using split_data(data,target)
+              Again, we train with regularization, but the erorr
+              is calculated without
 
         returns:
         train_error(gamma), cross_val_error(gamma), gamma, best_gamma
@@ -694,10 +735,12 @@ class NeuralNetwork(BaseEstimator):
         train_error = np.zeros(len(gammas))
         xval_error = np.zeros(len(gammas))
         for gi, gv in enumerate(gammas):
+#train with reg.
             self.fit(X, y, gamma=gv, maxiter=40, raninit=True)
-            
-            train_error[gi] = self.costFunctionU(X, y, gamma=gv)
-            xval_error[gi] = self.costFunctionU(Xval, yval, gamma=gv)
+           
+#evaluate error without reg. 
+            train_error[gi] = self.costFunctionU(X, y, gamma=0.)
+            xval_error[gi] = self.costFunctionU(Xval, yval, gamma=0.)
 
         if plot:
             plt.plot(gammas, train_error, label='Train')
@@ -803,6 +846,64 @@ class NeuralNetwork(BaseEstimator):
             name = "%s_%s.npy" % (basename, li)
             print "Saving layer %s to %s " % (li, name)
             np.save(name, theta)
+
+    def plot_firstlayer(self, imgdim=None,Nsamples=None):
+        """
+        plot the first layer of neurons
+        
+        Args:
+        imgdim = array [n, m]  of input image dimensions
+        Nsamples: randomly choose Nsamples-by-Nsamples of neurons
+                 and plot them. 
+                default = None = plot all neurons in first layer
+
+        """
+        theta = self.layers[0].theta[1:,:] #strip off bias
+        nimg, nneurons = theta.shape
+
+        if imgdim == None:
+            nx = int(np.sqrt(nimg))
+            ny = nx
+            if nx*ny < nimg:
+                nx += 1
+        else:
+            nx, ny = imgdim
+
+        if nx*ny != nimg:
+            print "image dimesions (%s,%s) don't match actual %s" % (nx,ny,nimg)
+            return
+
+        if Nsamples == None:
+#plot all of them
+            Nsamples = int(np.sqrt(nneurons))
+            if Nsamples*Nsamples < nneurons:
+                Nsamples += 1
+            samples = theta
+            print "showing all neurons"
+        else:
+            if nneurons < Nsamples*Nsamples:
+            #not enough neurons to fill this matrix completely, so use them all
+                Nsamples = int(np.sqrt(nneurons))
+                if Nsamples*Nsamples < nneurons:
+                    Nsamples += 1
+                samples = theta
+            else:
+            #randomly choose a subset
+                n = np.random.uniform(0, nneurons, Nsamples**2).astype(np.int)
+                samples = theta[:,n]
+        
+#add buffer:
+        buf = 3
+        data = np.zeros((Nsamples*(nx+buf), Nsamples*(ny+buf)))
+        for xi, xv in enumerate(samples.transpose()):
+            col = xi % Nsamples
+            row = xi // Nsamples
+#            print xi,data.shape,row,col,xv.shape
+            data[row*(nx+buf):(row+1)*nx+row*buf, col*(ny+buf):(col+1)*ny+col*buf] = xv.reshape(nx,ny)
+
+            
+        plt.imshow(data, cmap=plt.cm.gray)
+        plt.show()
         
 ############# end class NeuralNetwork ***************
 
@@ -891,6 +992,93 @@ class handwritingpix(object):
 
 
 #### Utility Functions ####
+def feature_curve(feature,
+                  originaldata,
+                  bounds=None,
+                  Npts=10,
+                  plot=False,
+                  pct=0.4):
+    """
+    returns the training and cross validation set errors
+    for a range of sizes of a given feature.
+    (good for diagnosing overfitting or underfitting/
+    high bias or high variance)
+    
+    Args:
+    classifier:  classifier
+    feature : string, name of the given feature 
+    (e.g. phasebins, intervals) 
+    originaldata : the original data loaded from pickled file, have ['pfds']
+    and ['target']
+    bounds : the range of feature sizes to explore
+    plot : whether or not to plot the scores
+    Npts : plot Npts points 
+    pct (0<pct<1) : split the data as "pct" training, 1-pct testing
+                   only if Xval = None
+                   default pct = 0.6
+    plot : False/[True] optionally plot the learning curve
+    
+    Note: if Xval == None, then we assume (X,y) is the entire set of data,
+          and we split them up using split_data(data,target)
+
+    returns three vectors of length(ntrials):
+    train_score: training error for the N=length(pct*X) 
+    test_score: error on x-val data, when trainined on "i" samples
+    ntrials
+
+    vals = values of feature sizes (e.g. 8 -- 32)
+
+    notes:
+    * a high error indicates lots of bias,
+      that you are probably underfitting the problem
+      (so add more neurons/layers, or lower regularization)
+     
+    * for lots of trials, a high gap between training_error
+      and test_error (x-val error) indicates lots of variance
+      (you are over-fitting, so remove some neurons/layers,
+       or increase the regularization parameter)
+	* finally, this is also provided by ubc_AI/training.py
+
+    """
+    pfds = originaldata['pfds']
+    target = originaldata['target']
+    classdict = {0:[4,5], 1:[6,7]}
+    for k, v in classdict.iteritems():
+        for val in v:
+            target[target == val] = k
+
+    if bounds == None:
+        vals = mgrid[8:32:1j*Npts]
+    else:
+        vals = mgrid[bounds[0]:bounds[1]:1j*Npts]
+
+    kws = {'phasebins':0}
+    train_score = np.zeros_like(vals)
+    test_score = np.zeros_like(vals)
+    for i, val in enumerate(vals):
+        kws[feature] = int(val)
+        data = [pf.getdata(**kws) for pf in pfds]
+        train_data, train_target, test_data, test_target = split_data(data,target, pct=pct)
+        classifier = create_NN(train_data,train_target,
+                               ninternal=[9],
+                               gamma=0.00025)
+        print "\nfeature idx, size, data_shape: %s, %s, %s" %\
+            (i, int(val),train_data.shape)
+
+        classifier.fit(train_data,train_target,maxiter=2222,raninit=True)
+#record erro
+        train_score[i] = 1-classifier.score(train_data, train_target)
+        test_score[i] = 1-classifier.score(test_data, test_target)
+    if plot:
+        plt.plot(vals, train_score, 'r+', label='training')
+        plt.plot(vals, test_score, 'bx', label='x-val')
+        plt.xlabel(feature)
+        plt.ylabel('error')
+        plt.legend()
+        plt.show()
+    return train_score, test_score, vals, vals[test_score.argmax()]
+
+
 def labels2vectors(y, Nclass=0):
     """
     given a vector of [nsamples] where the i'th entry is label/classification
@@ -961,7 +1149,9 @@ def split_data(data, target, pct=0.6):
 
     """
     from random import shuffle
-    
+    if isinstance(data,type([])):
+        data = np.array(data)
+
     L = len(target)
     index = range(L)
     cut = int(pct*L)
