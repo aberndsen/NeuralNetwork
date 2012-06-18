@@ -7,17 +7,23 @@ optimizations for large data sets
 
 """
 import numpy as np
-from scipy import io
+import cPickle
 import pylab as plt
-import sys
+from scipy import io
 from scipy import mgrid
 from scipy.optimize import fmin_cg
-#import pyximport; pyximport.install()
-#from cy_sigmoid import cy_sigmoid
+import sys
 from sklearn.base import BaseEstimator
+
 #Aaron's fortran-optimized openmp code
-from nnopt import sigmoid2d, matmult
-import cPickle
+try:
+    from nnopt import sigmoid2d, matmult
+    _fort_opt = True
+except(ImportError):
+    print "NeuralNetwork not using fortran-optimized code"
+    print "Refer to nn_optimize.f90 for tips"
+    print "defaulting to vectorized numpy implementation"
+    _fort_opt = False
 
 #number of iterations in training
 _niter = 0
@@ -33,16 +39,15 @@ def main():
 # show some samples of the data
     data.plot_samples(15)
 ###############
-# create the neural network, one needs to set the number of inputs attributes
-# (minus bias)
-# and the number of outputs (classifications)
-    nin = data.data.shape[1]
-    nout = len(np.unique(data.y))
-    nn = create_NN(nin, nout, thetas=data.thetas, gamma=0.)
+# create the neural network, 
+    nn = NeuralNetwork(gamma=0.)
 
 def load_pickle(fname):
     """
     recover from a pickled NeuralNetwork classifier
+
+    the neural design (nfeatures, nlayers, ntargets) are 
+    determined by the 'thetas' in the pickle 
 
     """
     d = cPickle.load(open(fname,'r'))
@@ -52,69 +57,8 @@ def load_pickle(fname):
     for li in range(nlayers):
         thetas.append(d[li])
 
-    nin = thetas[0].shape[0] - 1 # remove bias
-    nout = thetas[-1].shape[1]   # no bias on output
-    classifier = create_NN(nin, nout, thetas=thetas, gamma=gamma)
+    classifier = NeuralNetwork(gamma=gamma, thetas=thetas)
     return classifier
-
-def create_NN(ninputs, nout, ninternal= np.array([16]), thetas=np.array([]),
-              delta=0, gamma=0.):
-    """
-    configure our neural network.
-    The number of hidden layers is set by len(ninternal)
-
-    arguments:
-    ninputs: number of input attributes 
-            **can be a numpy.array([nsamples, nproperties])
-    nout: number of classifications
-            **can be a numpy.array([nsamples]),
-             then number of classifications = len(np.unique(nout))
-    ninternal: [number of attributes for the each internal layer (without bias)]
-
-    optionally initialize the Theta's in the l'th layer to your predefined array
-      * needs len(thetas) == len(ninternal) + 1 
-      * intial theta's should have bias term
-      if thetas = [], randomly initialize the theta's uniformly over range
-                      [-delta,delta], but then you should train your data
-    gamma : learning rate (regularization parameter)
-            defaults to 0.
-                  
-    """
-    if isinstance(ninputs, type(np.array([]))):
-        ninputs = ninputs.shape[1]
-    elif isinstance(ninputs, type([])):
-        ninputs = np.array(ninputs).shape[1]
-    if isinstance(nout, type(np.array([]))):
-        nout = len(np.unique(nout))
-    elif isinstance(nout, type([])):
-        nout = len(np.unique(nout))
-
-    nl = len(ninternal) + 1
-    layers = []
-    for idx in range(nl):
-        if thetas:
-            theta = thetas[idx]
-        else:
-            theta = np.array([])
-        #input layer
-        #add bias to all inputs
-        #add bias to outputs for internal/hidden layers
-        if idx == 0:
-            lin = ninputs + 1 #add bias
-        else:
-            lin = ninternal[idx - 1] + 1 #add bias
-
-        if idx == nl - 1:
-            lout = nout
-        else:
-            lout = ninternal[idx] 
-        
-        if idx == 0: print("")
-        print "Creating layer %s, (nin,nout) = (%s,%s) (ignoring bias)"\
-            % (idx, lin-1, lout)
-        layers.append(layer(lin, lout, theta))
-
-    return NeuralNetwork(layers, gamma=gamma)
 
 
 class layer(object):
@@ -161,18 +105,98 @@ class NeuralNetwork(BaseEstimator):
     """
     a collection of layers forming the neural network
 
-    Notes:
-    assumes labels are from [0, nclasses)
-    gamma = learning rate (regularization parameter), default = 0.
+    Args:
+    * gamma = learning rate (regularization parameter), default = 0.
+    * thetas = None (initialize the NN with neurons/layers determined
+              by the list of internal 'Thetas'
+              (default = None, defers until .fit call)
+    * design = None (initialize the NN with neurons/layers determined
+              by the list of neurons per layer
+              Eg. desing=[25,4] = 2-layers, first with 25, second with 4 
+
+    Note: if design != None and thetas != None, we get shape
+          from the thetas
+
+         if design = thetas = None, we determine design in fit routine
 
     """
-    def __init__(self, layers, gamma=0.):
+    def __init__(self, gamma=0., thetas=None, design=None, verbose=True):
+        self.gamma = gamma
+        self.design = design
+        if thetas != None:
+            nfeatures = thetas[0].shape[0]-1
+            ntargets = thetas[1].shape[1]
+            self.create_layers(nfeatures, ntargets, thetas=thetas, verbose=verbose)
+        self.nfit = 0 # keep track of number of times the classifier has been 'fit'
+
+    def create_layers(self, nfeatures, ntargets, design=None, gamma=None,
+                      thetas=None, verbose=True):
+        """
+        This routine is called by 'fit', and adjust the network design
+        for varying feature and target length, as well as network design.
+
+        Args:
+        nfeatures: number of features
+        ntargets : number of target labels
+        design : list of neurons per layer. 
+             Default = None, use self.design (if provided at init), 
+                 otherwise default to [16] = one layer of 16 neurons
+            Eg. design=[16,4] = a layer of 16 neurons, then a layer of 4 neurons
+        gamma : update self.gamma, the regularization parameter
+        thetas = None : can pass neural mappings as list of arrays (a list of thetas),
+                        otherwise they are randomly initialized (better).
+                      This overrides 'design'
+        verbose : True or False. Default False
+        """
+        if design == None:
+            if self.design != None:
+                design = self.design
+            else:
+                design = [16]
+        if isinstance(design, type(int())):
+            design = [design]
+
+        if thetas != None:
+            design = []
+            for theta in thetas[:-1]:
+                design.append(theta.shape[1])
+        self.design = design
+
+        if gamma != None:
+            self.gamma = gamma
+
+        layers = []
+        nl = len(design) + 1
+        for idx in range(nl):
+            if thetas != None:
+                theta = thetas[idx]
+            else:
+                theta = np.array([])
+
+# add bias to all inputs
+            if idx == 0:
+                lin = nfeatures + 1 #add bias
+            else: 
+                lin = design[idx - 1] + 1
+
+# add bias to outputs for internal/hidden layers
+            if idx == nl - 1:
+                lout = ntargets
+            else:
+                lout = design[idx]
+            
+            layers.append(layer(lin, lout, theta))
+        if True:
+            txt = "\nCreated (network,  gamma) = (%s-->" % nfeatures
+            for idx in design:
+                txt += "%s-->" % idx
+            txt += "%s,  %s) " % (ntargets, self.gamma)
+            print(txt)
+        self.design = design
+        self.ntargets = ntargets
         self.layers = layers
         self.nlayers = len(layers)
-        self.nclasses = layers[-1].theta.shape[-1]
-        self.gamma = gamma
-        self.nthetas = len(self.flatten_thetas())
-        self.nfit = 0 # keep track of number of times the classifier has been 'fit'
+
 
     def unflatten_thetas(self, thetas):
         """
@@ -216,7 +240,7 @@ class NeuralNetwork(BaseEstimator):
         thetas = self.flatten_thetas()
         return self.costFunction(thetas, X, y, gamma)
 
-    def costFunction(self, thetas, X, y, gamma=None):
+    def costFunction(self, thetas, X, y, gamma=None, verbose=True):
         """
         determine the cost function for this neural network
         given the training data X, classifcations y, 
@@ -228,6 +252,7 @@ class NeuralNetwork(BaseEstimator):
         y : classification label for the num_trials
         gamma : regularization parameter, 
                default = None = self.gamma
+        verbose: printing out training information (cost, #iterations)
 
         """
         global _niter
@@ -251,7 +276,7 @@ class NeuralNetwork(BaseEstimator):
 
         # propagate the input through the entire network
         z, h = self.forward_propagate(X)
-        yy = labels2vectors(y, self.nclasses)
+        yy = labels2vectors(y, self.ntargets)
  
         J = 0.
         J = (-np.log(h) * yy.transpose() - np.log(1-h)*(1-yy.transpose())).sum()
@@ -262,10 +287,12 @@ class NeuralNetwork(BaseEstimator):
         for l in self.layers:
             reg +=  (l.theta[1:, :]**2).sum()
         J = J + gamma*reg/(2*N)
-
-        if _niter % 25 == 0:
-            sys.stdout.write("\r(fit %s) training Iteration %s, Cost %12.7f " % (self.nfit,_niter, J))
-            sys.stdout.flush()
+        
+        if verbose:
+            if _niter % 25 == 0:
+                sys.stdout.write("\r\t(fit %s) NN.fit iter %s, Cost %12.7f "
+                                 % (self.nfit,_niter, J))
+                sys.stdout.flush()
         _niter += 1
         return J
 
@@ -301,7 +328,10 @@ class NeuralNetwork(BaseEstimator):
                 if N == 1:
                     a = np.hstack([np.ones(N), sigmoid(z)])
                 else:
-                    a = np.hstack([np.ones((N, 1)), sigmoid2d(z)])
+                    if _fort_opt:
+                        a = np.hstack([np.ones((N, 1)), sigmoid2d(z)])
+                    else:
+                        a = np.hstack([np.ones((N, 1)), sigmoid(z)])
             else:
                 if N == 1:
                     a = sigmoid(z)
@@ -356,13 +386,13 @@ class NeuralNetwork(BaseEstimator):
                 z, a = self.forward_propagate(X,li)
 
                 if li == nl:
-                    ay = labels2vectors(y, self.nclasses).transpose()
+                    ay = labels2vectors(y, self.ntargets).transpose()
                     delta = (a - ay)
                 else:
                     theta = self.layers[li].theta
                     aprime = np.hstack([np.ones((N,1)), sigmoidGradient(z)]) #add in bias
 #use fortran matmult if arrays are large
-                    if deltan.size * theta.size > 100000:
+                    if _fort_opt and deltan.size * theta.size > 100000:
                        tmp = matmult(deltan,theta.transpose())
                     else:
                        tmp = np.dot(deltan,theta.transpose())#nsamples x neurons(li)
@@ -383,50 +413,6 @@ class NeuralNetwork(BaseEstimator):
                     deltan = delta
                 else:
                     deltan = delta[:,1:]
-
-# old, non-vectorized implementation                     
-# loop over samples
-        if 0:
-          for si, sv in enumerate(X):
-
-# loop over layers (latest to earliest, no grad on first layer)
-            for li in range(nl, 0, -1):
-                z, a = self.forward_propagate(sv, li)
-
-                if li == nl:
-                    ay = labels2vectors(y[si], self.nclasses).transpose()
-                    delta = (a - ay)
-                else:
-                    theta = self.layers[li].theta
-# requires delta from next layer (hence reverse loop over layers)
-                    aprime = np.hstack([1, sigmoidGradient(z)]) #add in bias
-
-# only use fortan.matmult if arrays are gigantic
-                    if deltan.ndim == 1:
-                        delta = (aprime * np.dot(theta, deltan))
-                    else:
-                        if theta.size > 100000:
-                            tmp = matmult(theta, deltan)
-                            delta = (aprime * tmp)
-                        else:
-                            delta = (aprime * np.dot(theta, deltan))
-#                    
-
-# add this sample's contribution to the gradient:
-                idx = li - 1
-                z, a = self.forward_propagate(sv, idx)
-                if idx in grads:
-                    if li == nl:
-                        grads[idx] += np.outer(a, delta)/N
-                    else:
-                        #strip off bias
-                        grads[idx] += np.outer(a, delta[1:])/N
-
-#keep this delta for the next (earlier) layer
-                if li == nl:
-                    deltan = delta
-                else:
-                    deltan = delta[1:]
 
 
 #now regularize the grads (bias doesn't get get regularized):
@@ -459,78 +445,37 @@ class NeuralNetwork(BaseEstimator):
         """
         return np.mean(self.predict(X) == y)
 
-
-
-    def score_weiwei(self, X, y, verbose=True):
-        """
-        Returns the mean accuracy on the given test data and labels
-    
-        Parameters
-        ----------
-        X : array-like, shape = [n_samples, n_features]
-        Training set.
-        
-        y : array-like, shape = [n_samples]
-        Labels for X.
-        
-        Returns
-        -------
-        z : float
-
-        """
-        pred_cls = {}
-        true_cls = {}
-        for cls in range(self.nclasses):
-            pred_cls[cls] = set([])
-            true_cls[cls] = set([])
-            
-        for i, s in enumerate(X):
-            predict = self.predict(s)[0]
-            true_cls[y[i]].add(i)
-            pred_cls[y[i]].add(i)
-
-        tot_acc = 0.
-        for k in range(self.nclasses):
-            hit = pred_cls[k] & true_cls[k]
-            miss = pred_cls[k] - true_cls[k]
-            falsepos = true_cls[k] - pred_cls[k] 
-            precision = np.divide(float(len(hit)), len(pred_cls[k]))
-            recall = np.divide(float(len(hit)), len(true_cls[k]))
-            accuracy = (np.divide(float(len(hit)), len(true_cls[k])) * 100)
-            tot_acc += accuracy
-            if verbose:
-                print "\nClass %s:" % k
-                print 'accuracy: ', '%.0f%%' % (np.divide(float(len(hit)),len(true_cls[k])) * 100)
-                print 'miss: ', '%.0f%%' % (np.divide(float(len(miss)),len(true_cls[k])) * 100)
-                print 'false positives: ', '%.0f%%' % (np.divide(float(len(falsepos)),len(pred_cls[k]))* 100)
-                print 'precision: ', '%.0f%%' % (precision* 100)
-                print 'recall: ', '%.0f%%' % (recall* 100)
-
-        z = tot_acc / self.nclasses
-        return z
-
-    def fit(self, X, y, gamma=None, maxiter=200, epsilon=1.e-7,
-            gtol=1.e-5, raninit=True, info=False):
+    def fit(self, X, y, design=None, gamma=None,
+            gtol=1e-05, epsilon=1.4901161193847656e-08, maxiter=200,
+            raninit=True, info=False, verbose=False):
         """
         Train the data.
         minimize the cost function (wrt the Theta's)
         (using the conjugate gradient algorithm from scipy)
         This updates the NN.layers.theta's, so one can
-        later "predict" other samples.
+        later "predict" other samples. 
+        ** The number of input features is determined from X.shape[1],
+        and the number of targets from np.unique(y), so make sure
+        'y' spans your target space.
 
         Args:
         X : the training samples [nsamples x nproperties]
         y : the sample labels [nsamples], each entry in range 0<=y<nclass
+        design : list of number of neurons in each layer. 
+             Default = None, uses self.create_layers default=[16]
+             Eg. design=[12,3] is a neural network with 2 layers of 12, then 3 neurons
+                 (we add bias later)
         gamma : regularization parameter
-               default = None = self.gamma
-        info : T/F, return the information from fmin_cg (Default False)
+               default = None = self.gammas
+        verbose : print out layer-creation information
         *for scipy.optimize.fmin_cg:
-        maxiter
-        epsilon
         gtol
-
+        epsilon
+        maxiter
+        info : T/F, return the information from fmin_cg (Default False)
+        
         raninit : T/F randomly initialize the theta's [default = True]
-   
+                (only use 'False' to continue training, not for new NN's) 
         """
         global _niter
         _niter = 0
@@ -538,11 +483,13 @@ class NeuralNetwork(BaseEstimator):
         if gamma == None:
             gamma = self.gamma
 
-# check the input/output feature sizes haven't changed.
-# if so, update the layer mappings accordingly:
-        self.check_networksize(X, y)
-
+#update the NN layers (if necessary)
         if raninit:
+            self.create_layers(X.shape[1], 
+                               np.unique(y).size, 
+                               design=design,
+                               gamma=gamma,
+                               verbose=verbose)
             for lv in self.layers:
                 lv.randomize()
 
@@ -558,8 +505,9 @@ class NeuralNetwork(BaseEstimator):
 #                       callback=self.unflatten_thetas
                        )
         self.nfit += 1
-        print("\n")
+
         if info:
+            print("\n")
             return xopt
         
     def check_networksize(self,X,y):
@@ -573,9 +521,8 @@ class NeuralNetwork(BaseEstimator):
         """
 
         newinput = X.shape #[X] = [nsamples, nfeatures] input won't have bias
-        oldinput = self.layers[0].theta.shape #input already has bias
+        oldinput = self.layers[0].theta.shape #[nfeatures, nhidden] input already has bias
 
-        print "AAR",newinput,oldinput
 #check if inputs are same
         if newinput[1] + 1 != oldinput[0]:
             print "Note, updating input features from %s to %s" % (oldinput[0], newinput[1]+1)
@@ -614,6 +561,54 @@ class NeuralNetwork(BaseEstimator):
         else:
             cls = h.argmax(axis=1)
         return cls
+
+    def score_weiwei(self, X, y, verbose=True):
+        """
+        Returns the mean accuracy on the given test data and labels
+    
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+        Training set.
+        
+        y : array-like, shape = [n_samples]
+        Labels for X.
+        
+        Returns
+        -------
+        z : float
+
+        """
+        pred_cls = {}
+        true_cls = {}
+        for cls in range(self.ntargets):
+            pred_cls[cls] = set([])
+            true_cls[cls] = set([])
+            
+        for i, s in enumerate(X):
+            predict = self.predict(s)[0]
+            true_cls[y[i]].add(i)
+            pred_cls[y[i]].add(i)
+
+        tot_acc = 0.
+        for k in range(self.ntargets):
+            hit = pred_cls[k] & true_cls[k]
+            miss = pred_cls[k] - true_cls[k]
+            falsepos = true_cls[k] - pred_cls[k] 
+            precision = np.divide(float(len(hit)), len(pred_cls[k]))
+            recall = np.divide(float(len(hit)), len(true_cls[k]))
+            accuracy = (np.divide(float(len(hit)), len(true_cls[k])) * 100)
+            tot_acc += accuracy
+            if verbose:
+                print "\nClass %s:" % k
+                print 'accuracy: ', '%.0f%%' % (np.divide(float(len(hit)),len(true_cls[k])) * 100)
+                print 'miss: ', '%.0f%%' % (np.divide(float(len(miss)),len(true_cls[k])) * 100)
+                print 'false positives: ', '%.0f%%' % (np.divide(float(len(falsepos)),len(pred_cls[k]))* 100)
+                print 'precision: ', '%.0f%%' % (precision* 100)
+                print 'recall: ', '%.0f%%' % (recall* 100)
+
+        z = tot_acc / self.ntargets
+        return z
 
     def learning_curve(self, X, y,
                        Xval=None, 
@@ -659,7 +654,7 @@ class NeuralNetwork(BaseEstimator):
            or increase the regularization parameter)
 
         """
-        if not Xval:
+        if Xval == None:
             X, y, Xval, yval = split_data(X, y, pct=pct)
 
         if gamma == None:
@@ -726,10 +721,10 @@ class NeuralNetwork(BaseEstimator):
         train_error(gamma), cross_val_error(gamma), gamma, best_gamma
 
         """
-        if not Xval:
+        if Xval == None:
             X, y, Xval, yval = split_data(X, y, pct)
         
-        if not gammas:
+        if gammas == None:
             gammas = [0., 0.0001, 0.0005, 0.001, 0.05, 0.1, .5, 1., 1.5, 15.]
         
         train_error = np.zeros(len(gammas))
@@ -1037,7 +1032,6 @@ def feature_curve(feature,
       and test_error (x-val error) indicates lots of variance
       (you are over-fitting, so remove some neurons/layers,
        or increase the regularization parameter)
-	* finally, this is also provided by ubc_AI/training.py
 
     """
     pfds = originaldata['pfds']
@@ -1079,7 +1073,7 @@ def feature_curve(feature,
     return train_score, test_score, vals, vals[test_score.argmax()]
 
 
-def labels2vectors(y, Nclass=0):
+def labels2vectors(y, Nclass=1):
     """
     given a vector of [nsamples] where the i'th entry is label/classification
     for the i'th sample, return an array [nlabels,nsamples],
