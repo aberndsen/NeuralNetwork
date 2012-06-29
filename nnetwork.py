@@ -113,24 +113,38 @@ class NeuralNetwork(BaseEstimator):
     * design = None (initialize the NN with neurons/layers determined
               by the list of neurons per layer
               Eg. desing=[25,4] = 2-layers, first with 25, second with 4 
+    * fit_type = ['all','single'] . Fit the individual layers 'all' at once (default)
+                              or build up the NN, fitting a 'single' layer at a time,
+                              then adding the next layer.
+    * maxiter : number of iterations in self.fit's conjugate-gradient minimization
+                default = 100, can be overriden elsewhere (self.fit)
+                              
+    Notes: 
+    * if design != None and thetas != None, we get shape
+      from the thetas
 
-    Note: if design != None and thetas != None, we get shape
-          from the thetas
-
-         if design = thetas = None, we determine design in fit routine
+    * if design = thetas = None, we determine design in fit routine
 
     """
-    def __init__(self, gamma=0., thetas=None, design=None, verbose=True):
+    def __init__(self, gamma=0., thetas=None, design=None,
+                 fit_type='all', maxiter=None, verbose=False):
         self.gamma = gamma
         self.design = design
+        self.fit_type = fit_type
+        self.nin = None
+        self.nout = None
+        if maxiter == None:
+            self.maxiter = 100
+
         if thetas != None:
             nfeatures = thetas[0].shape[0]-1
             ntargets = thetas[1].shape[1]
             self.create_layers(nfeatures, ntargets, thetas=thetas, verbose=verbose)
+        self.verbose = verbose
         self.nfit = 0 # keep track of number of times the classifier has been 'fit'
 
     def create_layers(self, nfeatures, ntargets, design=None, gamma=None,
-                      thetas=None, verbose=True):
+                      thetas=None, verbose=None):
         """
         This routine is called by 'fit', and adjust the network design
         for varying feature and target length, as well as network design.
@@ -146,7 +160,7 @@ class NeuralNetwork(BaseEstimator):
         thetas = None : can pass neural mappings as list of arrays (a list of thetas),
                         otherwise they are randomly initialized (better).
                       This overrides 'design'
-        verbose : True or False. Default False
+
         """
         if design == None:
             if self.design != None:
@@ -186,11 +200,11 @@ class NeuralNetwork(BaseEstimator):
                 lout = design[idx]
             
             layers.append(layer(lin, lout, theta))
-        if True:
-            txt = "\nCreated (network,  gamma) = (%s-->" % nfeatures
+        if verbose or self.verbose:
+            txt = "Created (network,  gamma) = (%s-->" % (nfeatures)
             for idx in design:
                 txt += "%s-->" % idx
-            txt += "%s,  %s) " % (ntargets, self.gamma)
+            txt += "%s,  %s)\n " % (ntargets, self.gamma)
             print(txt)
         self.design = design
         self.ntargets = ntargets
@@ -240,7 +254,7 @@ class NeuralNetwork(BaseEstimator):
         thetas = self.flatten_thetas()
         return self.costFunction(thetas, X, y, gamma)
 
-    def costFunction(self, thetas, X, y, gamma=None, verbose=True):
+    def costFunction(self, thetas, X, y, gamma=None, verbose=None):
         """
         determine the cost function for this neural network
         given the training data X, classifcations y, 
@@ -288,7 +302,7 @@ class NeuralNetwork(BaseEstimator):
             reg +=  (l.theta[1:, :]**2).sum()
         J = J + gamma*reg/(2*N)
         
-        if verbose:
+        if verbose or self.verbose:
             if _niter % 25 == 0:
                 sys.stdout.write("\r\t(fit %s) NN.fit iter %s, Cost %12.7f "
                                  % (self.nfit,_niter, J))
@@ -336,10 +350,13 @@ class NeuralNetwork(BaseEstimator):
                 if N == 1:
                     a = sigmoid(z)
                 else:
-                    a = sigmoid2d(z)
+                    if _fort_opt:
+                        a = sigmoid2d(z)
+                    else:
+                        a = sigmoid(z)
         return z, a
 
-    def gradientU(self, X, y, gamma=None):
+    def gradientU(self, X, y, gamma=None, verbose=None):
         """
         Convenience function.
         routine which calls gradient, but
@@ -350,9 +367,9 @@ class NeuralNetwork(BaseEstimator):
 
         """
         thetas = self.flatten_thetas()
-        return self.gradient(thetas, X, y, gamma)
+        return self.gradient(thetas, X, y, gamma, verbose=verbose)
         
-    def gradient(self, thetas, X, y, gamma=None):
+    def gradient(self, thetas, X, y, gamma=None, verbose=None):
         """
         compute the gradient at each layer of the neural network
         
@@ -446,8 +463,8 @@ class NeuralNetwork(BaseEstimator):
         return np.mean(self.predict(X) == y)
 
     def fit(self, X, y, design=None, gamma=None,
-            gtol=1e-05, epsilon=1.4901161193847656e-08, maxiter=200,
-            raninit=True, info=False, verbose=False):
+            gtol=1e-05, epsilon=1.4901161193847656e-08, maxiter=None,
+            raninit=True, info=False, verbose=None, fit_type=None):
         """
         Train the data.
         minimize the cost function (wrt the Theta's)
@@ -482,59 +499,85 @@ class NeuralNetwork(BaseEstimator):
 
         if gamma == None:
             gamma = self.gamma
+        if verbose or self.verbose:
+            verbose = True
+        if fit_type == None:
+            fit_type = self.fit_type
+        if maxiter == None:
+            maxiter = self.maxiter
+            
+        # train all layers at same time
+        if fit_type == 'all':
+    #update the NN layers (if necessary)
+            if raninit:
+                self.create_layers(X.shape[1], 
+                                   np.unique(y).size, 
+                                   design=design,
+                                   gamma=gamma,
+                                   verbose=verbose)
+                for lv in self.layers:
+                    lv.randomize()
 
-#update the NN layers (if necessary)
-        if raninit:
+            thetas = self.flatten_thetas()
+            xopt = fmin_cg(f=self.costFunction,
+                           x0=thetas,
+                           fprime=self.gradient,
+                           args=(X, y, gamma, verbose), #extra args to costFunction 
+                           maxiter=maxiter,
+                           epsilon=epsilon,
+                           gtol=gtol,
+                           disp=0,
+                           )
+
+        # build up the NN, training each layer one at a time
+        elif fit_type == 'single':
+            thetas = []
+            if design == None:
+                design = self.design
+            if self.nin == None:
+                self.nin = X.shape[1]
+                self.nout = np.unique(y).size
+
+            # train the individual layers
+            for lyr in range(len(design)):
+                if verbose:
+                    print "\nTraining layer %s" % (lyr+1)
+                nn = NeuralNetwork(gamma = gamma,
+                                   design = design[0:lyr+1],
+                                   fit_type='all'
+                                   )
+                nn.create_layers(self.nin, 
+                                 self.nout,
+                                 design=design[0:lyr+1],
+                                 gamma=gamma,
+                                 verbose=verbose)
+                for lyri, theta in enumerate(thetas):
+                    nn.layers[lyri].theta = theta
+                nn.fit(X, y,
+                       gtol=gtol, epsilon=epsilon, maxiter=maxiter,
+                       raninit=False, info=info, verbose=verbose)
+                thetas.append(nn.layers[lyr].theta)
+
+            # transfer the Theta's to our NN
             self.create_layers(X.shape[1], 
                                np.unique(y).size, 
                                design=design,
                                gamma=gamma,
                                verbose=verbose)
-            for lv in self.layers:
-                lv.randomize()
-
-        thetas = self.flatten_thetas()
-        xopt = fmin_cg(f=self.costFunction,
-                       x0=thetas,
-                       fprime=self.gradient,
-                       args=(X, y, gamma), #extra args to costFunction 
-                       maxiter=maxiter,
-                       epsilon=epsilon,
-                       gtol=gtol,
-                       disp=0,
-#                       callback=self.unflatten_thetas
-                       )
+            for lyri, theta in enumerate(thetas):
+                self.layers[lyri].theta = theta
+            self.fit(X, y,
+                     gtol=gtol, epsilon=epsilon, maxiter=maxiter,
+                     raninit=False, info=info, verbose=verbose,
+                     fit_type='all') 
+                
+                                   
         self.nfit += 1
 
         if info:
             print("\n")
             return xopt
         
-    def check_networksize(self,X,y):
-        """
-        scikit learn initializes the free parameters when 'fit' is run. I initially coded things up 
-        to initialize these on object initialization.
-
-        This routine fixes the problem, and redesigns the input and output thetas depending on X and y.
-        The internal neural structure is preserved.
-        
-        """
-
-        newinput = X.shape #[X] = [nsamples, nfeatures] input won't have bias
-        oldinput = self.layers[0].theta.shape #[nfeatures, nhidden] input already has bias
-
-#check if inputs are same
-        if newinput[1] + 1 != oldinput[0]:
-            print "Note, updating input features from %s to %s" % (oldinput[0], newinput[1]+1)
-            self.layers[0] = layer(newinput[1]+1, oldinput[1]) #add bias and randomly init.
-
-#check if outputs are same
-        newoutput = len(np.unique(y))
-        oldoutput = self.layers[-1].theta.shape
-        if oldoutput[1] != newoutput:
-            print "Note, updating output features from %s to %s" % (oldoutput[1], newoutput)
-            self.layers[-1] = layer(oldoutput[0], newoutput)
-
     def predict(self, X):
         """
         Given a list of samples, predict their class.
@@ -562,7 +605,7 @@ class NeuralNetwork(BaseEstimator):
             cls = h.argmax(axis=1)
         return cls
 
-    def score_weiwei(self, X, y, verbose=True):
+    def score_weiwei(self, X, y, verbose=None):
         """
         Returns the mean accuracy on the given test data and labels
     
@@ -599,7 +642,7 @@ class NeuralNetwork(BaseEstimator):
             recall = np.divide(float(len(hit)), len(true_cls[k]))
             accuracy = (np.divide(float(len(hit)), len(true_cls[k])) * 100)
             tot_acc += accuracy
-            if verbose:
+            if verbose or self.verbose:
                 print "\nClass %s:" % k
                 print 'accuracy: ', '%.0f%%' % (np.divide(float(len(hit)),len(true_cls[k])) * 100)
                 print 'miss: ', '%.0f%%' % (np.divide(float(len(miss)),len(true_cls[k])) * 100)
