@@ -135,6 +135,8 @@ class NeuralNetwork(BaseEstimator):
         self.nout = None
         if maxiter == None:
             self.maxiter = 100
+        else:
+            self.maxiter = maxiter
 
         if thetas != None:
             nfeatures = thetas[0].shape[0]-1
@@ -204,7 +206,7 @@ class NeuralNetwork(BaseEstimator):
             txt = "Created (network,  gamma) = (%s-->" % (nfeatures)
             for idx in design:
                 txt += "%s-->" % idx
-            txt += "%s,  %s)\n " % (ntargets, self.gamma)
+            txt += "%s,  %s) " % (ntargets, self.gamma)
             print(txt)
         self.design = design
         self.ntargets = ntargets
@@ -558,6 +560,10 @@ class NeuralNetwork(BaseEstimator):
                        raninit=False, info=info, verbose=verbose)
                 thetas.append(nn.layers[lyr].theta)
 
+# what are we looking at? (diagnostic)
+#                if verbose:
+#                    nn.plot_firstlayer()
+
             # transfer the Theta's to our NN
             self.create_layers(X.shape[1], 
                                np.unique(y).size, 
@@ -566,10 +572,10 @@ class NeuralNetwork(BaseEstimator):
                                verbose=verbose)
             for lyri, theta in enumerate(thetas):
                 self.layers[lyri].theta = theta
-            self.fit(X, y,
-                     gtol=gtol, epsilon=epsilon, maxiter=maxiter,
-                     raninit=False, info=info, verbose=verbose,
-                     fit_type='all') 
+#            self.fit(X, y,
+#                     gtol=gtol, epsilon=epsilon, maxiter=maxiter,
+#                     raninit=False, info=info, verbose=verbose,
+#                     fit_type='all') 
                 
                                    
         self.nfit += 1
@@ -908,8 +914,11 @@ class NeuralNetwork(BaseEstimator):
             nx, ny = imgdim
 
         if nx*ny != nimg:
-            print "image dimesions (%s,%s) don't match actual %s" % (nx,ny,nimg)
-            return
+            #Assume this is a 1-d thingy
+#            print "image dimensions (%s,%s) don't match actual %s" % (nx,ny,nimg)
+            nx = nimg
+            ny = 1
+#           return
 
         if Nsamples == None:
 #plot all of them
@@ -930,17 +939,21 @@ class NeuralNetwork(BaseEstimator):
                 n = np.random.uniform(0, nneurons, Nsamples**2).astype(np.int)
                 samples = theta[:,n]
         
-#add buffer:
-        buf = 3
-        data = np.zeros((Nsamples*(nx+buf), Nsamples*(ny+buf)))
-        for xi, xv in enumerate(samples.transpose()):
-            col = xi % Nsamples
-            row = xi // Nsamples
-#            print xi,data.shape,row,col,xv.shape
-            data[row*(nx+buf):(row+1)*nx+row*buf, col*(ny+buf):(col+1)*ny+col*buf] = xv.reshape(nx,ny)
+#add buffer between neurons:
+        if ny != 1:
+            buf = 3
+            data = np.zeros((Nsamples*(nx+buf), Nsamples*(ny+buf)))
+            for xi, xv in enumerate(samples.transpose()):
+                col = xi % Nsamples
+                row = xi // Nsamples
+    #            print xi,data.shape,row,col,xv.shape
+                data[row*(nx+buf):(row+1)*nx+row*buf, col*(ny+buf):(col+1)*ny+col*buf] = xv.reshape(nx,ny)
 
-            
-        plt.imshow(data, cmap=plt.cm.gray)
+            plt.imshow(data, cmap=plt.cm.gray)
+        else:
+            for xi, xv in enumerate(samples.transpose()):
+                plt.plot(xv.reshape(nx,ny))
+        plt.title('First layer of Neural Network')
         plt.show()
         
 ############# end class NeuralNetwork ***************
