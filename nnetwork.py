@@ -341,7 +341,7 @@ class NeuralNetwork(BaseEstimator):
             z = np.dot(a, lv.theta)
             # add bias to input of each internal layer
             if li != final_layer:
-                if N == 1:
+                if N == 1 and z.ndim == 1:
                     a = np.hstack([np.ones(N), sigmoid(z)])
                 else:
                     if _fort_opt:
@@ -533,7 +533,6 @@ class NeuralNetwork(BaseEstimator):
 
         # build up the NN, training each layer one at a time
         elif fit_type == 'single':
-            thetas = []
             if design == None:
                 design = self.design
             if self.nin == None:
@@ -541,6 +540,7 @@ class NeuralNetwork(BaseEstimator):
                 self.nout = np.unique(y).size
 
             # train the individual layers
+            thetas = []
             for lyr in range(len(design)):
                 if verbose:
                     print "\nTraining layer %s" % (lyr+1)
@@ -558,9 +558,11 @@ class NeuralNetwork(BaseEstimator):
                 nn.fit(X, y,
                        gtol=gtol, epsilon=epsilon, maxiter=maxiter,
                        raninit=False, info=info, verbose=verbose)
-                thetas.append(nn.layers[lyr].theta)
+                thetas =[nn.layers[i].theta for i in range(lyr+1)] 
+#.append(nn.layers[lyr].theta)
+            #end design loop
 
-# what are we looking at? (diagnostic)
+# (diagnostics)
 #                if verbose:
 #                    nn.plot_firstlayer()
 
@@ -570,13 +572,18 @@ class NeuralNetwork(BaseEstimator):
                                design=design,
                                gamma=gamma,
                                verbose=verbose)
-            for lyri, theta in enumerate(thetas):
-                self.layers[lyri].theta = theta
-#            self.fit(X, y,
-#                     gtol=gtol, epsilon=epsilon, maxiter=maxiter,
-#                     raninit=False, info=info, verbose=verbose,
-#                     fit_type='all') 
-                
+#            for lyri, theta in enumerate(thetas):
+#                self.layers[lyri].theta = theta
+            for lyri, lyr in enumerate(nn.layers):
+                self.layers[lyri].theta = lyr.theta
+
+#            print "N",len(self.layers),self.layers[-1].theta[0:3,0:3]
+#            print "O",len(thetas),thetas[-1][0:3,0:3]
+           
+            self.fit(X, y,
+                     gtol=gtol, epsilon=epsilon, maxiter=maxiter,
+                     raninit=False, info=info, verbose=verbose,
+                     fit_type='all') 
                                    
         self.nfit += 1
 
