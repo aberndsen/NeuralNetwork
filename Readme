@@ -1,0 +1,14 @@
+Aaron Berndsen:
+A neural network designed to integrate with scikitlearn's sklearn python package.
+
+is fully numpy-vectorized and has been profiled to ship key components to
+openmp-optimized f90 code
+
+supports online learning.
+
+Basic usage:
+import nnetwork as NN
+
+n = NN.NeuarlNetwork(design=[8,8]) # a NN with two hidden layers of 8 neurons each
+n.fit(Xtrain, ytrain)
+pred = n.predict(Xtest)
