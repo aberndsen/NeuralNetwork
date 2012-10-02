@@ -618,6 +618,36 @@ class NeuralNetwork(BaseEstimator):
             cls = h.argmax(axis=1)
         return cls
 
+    def predict_proba(self, X):
+        """
+        Compute the likehoods each possible outcomes of samples in T.
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+
+        Returns
+        -------
+        X : array-like, shape = [n_samples, n_classes]
+            Returns the probability of the sample for each class in
+            the model, where classes are ordered by arithmetical
+            order.
+
+        """
+        if isinstance(X, type([])):
+            X = np.array(X)
+        if len(X.shape) == 2:
+            N = X.shape[0]
+        else:
+            N = 1
+
+        z, h  = self.forward_propagate(X)
+        norm = h.sum(axis=1)
+        for ni, nv in enumerate(norm):
+            h[ni] = h[ni] / nv
+        return h
+
+
     def score_weiwei(self, X, y, verbose=None):
         """
         Returns the mean accuracy on the given test data and labels
