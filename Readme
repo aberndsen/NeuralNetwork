@@ -9,6 +9,6 @@ supports online learning.
 Basic usage:
 import nnetwork as NN
 
-n = NN.NeuarlNetwork(design=[8,8]) # a NN with two hidden layers of 8 neurons each
+n = NN.NeuralNetwork(design=[8,8]) # a NN with two hidden layers of 8 neurons each
 n.fit(Xtrain, ytrain)
 pred = n.predict(Xtest)
