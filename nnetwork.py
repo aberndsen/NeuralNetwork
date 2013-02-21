@@ -73,14 +73,16 @@ class layer(object):
     optional:
     theta = the transformation matrix of size (N+1,m) (includes bias)
           otherwise randomly initialize theta
-          we uniformly initialize theta over [-delta,delta]
+          we uniformly initialize theta over [-delta, delta]
           where delta = sqrt(6)/sqrt(N+m), or passed as argument
+    shiftlayer = False. If true, we repeat the first neuron weightings, shifted.
 
     """
-    def __init__(self, n, m, theta=np.array([]), delta=0):
+    def __init__(self, n, m, theta=np.array([]), delta=0, shiftlayer=False):
         #n includes bias
         self.inp = n
         self.output = m
+        self.shiftlayer = shiftlayer
         if len(theta):
             self.theta = theta
         else:
@@ -100,6 +102,13 @@ class layer(object):
             delta = np.sqrt(6)/np.sqrt( N + m)
         self.theta = np.random.uniform(-delta, delta, N*m).reshape(N, m)
 
+        if self.shiftlayer:
+            #make sure the subsequent layers are simply a shifted copy of the first
+            l1 = self.theta[:,0]
+            dshift = N//m
+            for i in range(m-1):
+                shift = dshift * (i+1)
+                self.theta[:,i+1] = np.roll(l1, shift)
 
 class NeuralNetwork(BaseEstimator):
     """
@@ -118,7 +127,11 @@ class NeuralNetwork(BaseEstimator):
                               then adding the next layer.
     * maxiter : number of iterations in self.fit's conjugate-gradient minimization
                 default = 100, can be overriden elsewhere (self.fit)
-                              
+    * shiftlayer : if not None, instead of having N independent neurons in this layer,
+                 we reproduce the first neuron N-times, shifting the weights of the first one.
+                 This is meant to help remove phase-dependence of the pulse.
+                 shiftlayer in [0, 1, 2, ...] number of hidden layers
+    
     Notes: 
     * if design != None and thetas != None, we get shape
       from the thetas
@@ -127,7 +140,7 @@ class NeuralNetwork(BaseEstimator):
 
     """
     def __init__(self, gamma=0., thetas=None, design=None,
-                 fit_type='all', maxiter=None, verbose=False):
+                 fit_type='all', maxiter=None, shiftlayer=None, verbose=False):
         self.gamma = gamma
         self.design = design
         self.fit_type = fit_type
@@ -137,16 +150,17 @@ class NeuralNetwork(BaseEstimator):
             self.maxiter = 100
         else:
             self.maxiter = maxiter
-
+        self.shiftlayer = shiftlayer
         if thetas != None:
             nfeatures = thetas[0].shape[0]-1
             ntargets = thetas[1].shape[1]
-            self.create_layers(nfeatures, ntargets, thetas=thetas, verbose=verbose)
+            self.create_layers(nfeatures, ntargets, thetas=thetas, verbose=verbose,\
+                                   shiftlayer=shiftlayer)
         self.verbose = verbose
         self.nfit = 0 # keep track of number of times the classifier has been 'fit'
 
     def create_layers(self, nfeatures, ntargets, design=None, gamma=None,
-                      thetas=None, verbose=None):
+                      thetas=None, verbose=None, shiftlayer=None):
         """
         This routine is called by 'fit', and adjust the network design
         for varying feature and target length, as well as network design.
@@ -162,7 +176,9 @@ class NeuralNetwork(BaseEstimator):
         thetas = None : can pass neural mappings as list of arrays (a list of thetas),
                         otherwise they are randomly initialized (better).
                       This overrides 'design'
-
+        shiftlayer = None: if not None, the theta is simply a shifted repeat of the first neuron
+                           in this layer
+                   
         """
         if design == None:
             if self.design != None:
@@ -200,8 +216,14 @@ class NeuralNetwork(BaseEstimator):
                 lout = ntargets
             else:
                 lout = design[idx]
-            
-            layers.append(layer(lin, lout, theta))
+            if shiftlayer is not None:
+                if idx == shiftlayer:
+                    layers.append(layer(lin, lout, theta, shiftlayer=True))
+                else:
+                    layers.append(layer(lin, lout, theta, shiftlayer=False))
+            else:
+                layers.append(layer(lin, lout, theta, shiftlayer=False))
+                
         if verbose or self.verbose:
             txt = "Created (network,  gamma) = (%s-->" % (nfeatures)
             for idx in design:
@@ -358,7 +380,7 @@ class NeuralNetwork(BaseEstimator):
                         a = sigmoid(z)
         return z, a
 
-    def gradientU(self, X, y, gamma=None, verbose=None):
+    def gradientU(self, X, y, gamma=None, shiftlayer=None, verbose=None):
         """
         Convenience function.
         routine which calls gradient, but
@@ -380,6 +402,7 @@ class NeuralNetwork(BaseEstimator):
         y = [nsamples] #the training classifications
         gamma : regularization parameter
                default = None = self.gamma
+        shiftlayer : None, or the layer which 
 
         returns the gradient for the parameters of the neural network
         (the theta's) unrolled into one large vector, ordered from
@@ -426,6 +449,19 @@ class NeuralNetwork(BaseEstimator):
                     else:
                         #strip off bias
                         grads[idx] = np.dot(a.transpose(), delta[:,1:])/N
+
+#if this is a "shift-invar" layer, find the average grad 
+                if self.shiftlayer is not None:
+                    if li == self.shiftlayer:
+                        shape = self.layers[li].theta.shape
+                        grads = grads.reshape(shape)
+                        l1 = grads[:,0]
+                        dshift = N//m
+                        for i in range(m-1):
+                            shift = -dshift * (i+1) #undo the previous shifts
+                            self.theta[:,i+1] = np.roll(l1, shift)
+                        grad_avg = self.theta.mean(axis=0)
+                        grads = np.array([grad_avg for i in range(shape[1])]).flatten()
 
 #keep this delta for the next (earlier) layer
                 if li == nl:
@@ -516,7 +552,8 @@ class NeuralNetwork(BaseEstimator):
                                    np.unique(y).size, 
                                    design=design,
                                    gamma=gamma,
-                                   verbose=verbose)
+                                   verbose=verbose,
+                                   shiftlayer=self.shiftlayer)
                 for lv in self.layers:
                     lv.randomize()
 
@@ -552,7 +589,8 @@ class NeuralNetwork(BaseEstimator):
                                  self.nout,
                                  design=design[0:lyr+1],
                                  gamma=gamma,
-                                 verbose=verbose)
+                                 verbose=verbose,
+                                 shiftlayer=self.shiftlayer)
                 for lyri, theta in enumerate(thetas):
                     nn.layers[lyri].theta = theta
                 nn.fit(X, y,
@@ -571,7 +609,8 @@ class NeuralNetwork(BaseEstimator):
                                np.unique(y).size, 
                                design=design,
                                gamma=gamma,
-                               verbose=verbose)
+                               verbose=verbose,
+                               shiftlayer=self.shiftlayer)
 #            for lyri, theta in enumerate(thetas):
 #                self.layers[lyri].theta = theta
             for lyri, lyr in enumerate(nn.layers):
@@ -646,7 +685,6 @@ class NeuralNetwork(BaseEstimator):
         for ni, nv in enumerate(norm):
             h[ni] = h[ni] / nv
         return h
-
 
     def score_weiwei(self, X, y, verbose=None):
         """
